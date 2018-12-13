@@ -1,12 +1,24 @@
 package com.qcj.bigdata.dmp.util
 
+import scala.collection.mutable
+
 /**
   * 日期时间处理工具
   * 字符串处理工具
   */
 object Utils {
 
-    //2016-10-01 06:19:17
+  //循环合并到一个新map中
+  def addTags(tags: mutable.Map[String, Int]*): mutable.Map[String, Int] = {
+    var newTags = mutable.Map[String, Int]()
+    tags.foreach( tag =>
+      newTags = newTags.++(tag)
+    )
+    newTags
+  }
+
+
+  //2016-10-01 06:19:17
     def fmtHour(str: String) = {
         if(StringUtil.isEmpty(str)) {
             None

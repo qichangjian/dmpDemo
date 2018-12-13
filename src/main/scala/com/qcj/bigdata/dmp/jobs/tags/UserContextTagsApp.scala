@@ -1,24 +1,21 @@
 package com.qcj.bigdata.dmp.jobs.tags
 
-import java.util
+import java.util.Properties
 
 import com.qcj.bigdata.dmp.tags._
-import com.qcj.bigdata.dmp.util.{HBaseConnectionUtil, Utils}
-import org.apache.hadoop.hbase.TableName
-import org.apache.hadoop.hbase.client.Put
+import com.qcj.bigdata.dmp.util.Utils
 import org.apache.spark.SparkConf
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.{Row, SparkSession}
+import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
+import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 
 import scala.collection.mutable
 
 /**
-  * 用户标签提取应用
+  * 标签的合并
+  * 将数据库中的用户信息与标签的合集join得到一个完整的用户返回信息
   */
-/* 步骤：
-  *  创建字典映射表：
-  */
-object UserTagsExtractApp {
+object UserContextTagsApp {
   def main(args: Array[String]): Unit = {
     /*if(args == null || args.length < 5) {
       println(
@@ -44,7 +41,9 @@ object UserTagsExtractApp {
     //加载广告数据
     //val adLogsDF = spark.read.parquet(adlogs)
     val adLogsDF = spark.read.parquet("data/out/")
-    adLogsDF.show()
+    //adLogsDF.show()
+
+
     //用户对应的多个标签
     val userid2TagsRDD:RDD[(String, mutable.Map[String, Int])] = adLogsDF.rdd.map{case row => {
         //在这里面完成的标签的提取
@@ -68,8 +67,6 @@ object UserTagsExtractApp {
       //将所有用户对应的标签MAP合并(标签1->1,标签2->2,标签3->3)
 //      val tagsMap = positionTags.++(appNameTags).++(channelTags)
       val tagsMap = Utils.addTags(positionTags, appNameTags, channelTags, deviceTags, keywordTags, zoneTags)
-//      println(s"-----------------${userId}")
-//      println(s"-----------------${row.fieldIndex("userid")}")
       (userId, tagsMap)//用户：标签
     }}
     //(1,Map(ZC_上海市 -> 1, APP_马上赚 -> 1, ZP_上海市 -> 1, DEVICE_NETWORK_D0002001 -> 1, LC_02 -> 1, DEVICE_ISP_D0003004 -> 1, DEVICE_OS_D0001001 -> 1, CN_ -> 0))
@@ -81,8 +78,6 @@ object UserTagsExtractApp {
     val useridTagsRDD:RDD[(String, mutable.Map[String, Int])] = userid2TagsRDD.reduceByKey{case (map1, map2) => {
       for((tag, count) <- map2) {//第二个中的
         map1.put(tag, map1.getOrElse(tag, 0) + count)//map1中的值加上map2中的值相加之后放入map1中
-        //                val map1OldValue = map1.get(tag)
-        //                map1.put(tag, count + map1OldValue.getOrElse(0))
       }
       map1
     }}
@@ -90,35 +85,78 @@ object UserTagsExtractApp {
     //useridTagsRDD.foreach(println)
 
 
-    /**
-      * 因为标签的动态化，所以很难找到一种传统的数据来进行存储，只能使用非关系型数据，可以动态的添加列内容
-      * hbase、es等待
-      * spark去操作hbase，就将hbase当做mysql去处理，所以spark怎么操作mysql，就怎么操作hbase
-      * 启动hbase:启动命令：  start-hbase.sh
-      * 创建hbase数据库：     create 'dmp_1807', 'cf'
-      * 去hbase中查看：  scan 'dmp_1807'
-      * 重新运行会把原来的数据给覆盖掉，但是有时间戳记录版本
-      */
-    useridTagsRDD.foreachPartition(partition => {
-      if(!partition.isEmpty) {
-        val connection = HBaseConnectionUtil.getConnection()
-        val table = connection.getTable(TableName.valueOf("dmp_1807"))
-        partition.foreach{case (userid, tags) => {
-          //import to hbase
-          val puts = new util.ArrayList[Put]()
-          //(tag, counts)：ZC_上海市 -> 2
-          for((tag, counts) <- tags) {
-            val put = new Put(userid.getBytes)
-            put.addColumn("cf".getBytes, tag.getBytes, (counts + "").getBytes)
-            puts.add(put)
-          }
-          table.put(puts)
-          table.close()
-        }}
-        connection.close()
-      }
-    })
+    /*
+      (userid, Map(tag, count))
+      userid, "app->1, andorid->1"
+      USERID:1--->ZC_上海市 -> 2,APP_马上赚 -> 2,LC_02 -> 2,DEVICE_NETWORK_D0002001 -> 2,ZP_上海市 -> 2,DEVICE_ISP_D0003004 -> 2,CN_ -> 0,DEVICE_OS_D0001001 -> 2
+    */
+    val userid2ContextTagRDD:RDD[(String, String)] = useridTagsRDD.map{case (userid, tags) => {
+      (userid, tags.mkString(","))//mkString把一个集合转换为一个字符串
+    }}
+    //打印
+    /*userid2ContextTagRDD.foreach{case (userid, tag) => {
+      println(s"${userid}--->${tag}")
+    }}*/
 
+    //读取数据库中用户的基础信息为DF
+    val url = "jdbc:mysql://localhost:3306/dmp_1807?useUnicode=true&characterEncoding=utf8"
+    val properties = new Properties()
+    properties.put("user", "root")
+    properties.put("password", "274039")
+    val userDF = spark.read.jdbc(url, "t_user", properties)
+    userDF.createOrReplaceTempView("user_basic_info")
+
+    /**
+      * 做用户人口学特征和动态行为信息关联操作
+      * 1、将useridTagsRDD转化成为df
+      * 2、join操作
+      */
+    val rowRDD = userid2ContextTagRDD.map{case (userid, tag) => {
+      Row(userid, tag)
+    }}
+    //[USERID:2,LC_02 -> 2,DEVICE_NETWORK_D0002001 -> 2,DEVICE_ISP_D0003004 -> 2,ZC_益阳市 -> 2,CN_ -> 0,APP_其他 -> 2,DEVICE_OS_D0001001 -> 2,ZP_湘南省 -> 2]
+    //rowRDD.foreach(println)
+
+    val schema = StructType(List(
+      StructField("userid", DataTypes.StringType, false),
+      StructField("tag", DataTypes.StringType, false)
+    ))
+    //将useridTagsRDD转化成为df
+    val tagInfoDF:DataFrame = spark.createDataFrame(rowRDD, schema)
+    tagInfoDF.createOrReplaceTempView("user_tag_info")
+
+    //打印两个DF
+//    tagInfoDF.show()//USERID:2|LC_02 -> 2,DEVICE...
+//    userDF.show()// |  2|  孙玉|     1|371323199601274128|17843860331|1998-02-22|  1| 178643@qq.com|     临沂|
+
+    //关联两个DF查询
+    val sql =
+      """
+        |select
+        |  t.userid,
+        |  b.name,
+        |  b.gender,
+        |  b.idcard,
+        |  b.phone,
+        |  b.birthday,
+        |  b.cid,
+        |  b.email,
+        |  b.address,
+        |  t.tag
+        |from user_tag_info t
+        |left join user_basic_info b on substring_index(t.userid, ':', -1) = b.uid
+        |
+            """.stripMargin
+    spark.sql(sql).show()
+
+    /*查询结果：
++--------+----+------+------------------+-----------+----------+---+--------------+-------+--------------------+
+|  userid|name|gender|            idcard|      phone|  birthday|cid|         email|address|                 tag|
++--------+----+------+------------------+-----------+----------+---+--------------+-------+--------------------+
+|USERID:1|  汤其|     0|371323199601274033|17863860446|1997-01-01|  0|tangqi@163.com|     曲阜|ZC_上海市 -> 2,APP_马...|
+|USERID:2|  孙玉|     1|371323199601274128|17843860331|1998-02-22|  1| 178643@qq.com|     临沂|LC_02 -> 2,DEVICE...|
++--------+----+------+------------------+-----------+----------+---+--------------+-------+--------------------+
+      */
     spark.stop()
   }
 

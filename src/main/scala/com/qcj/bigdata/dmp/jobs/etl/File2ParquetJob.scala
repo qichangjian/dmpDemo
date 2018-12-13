@@ -73,9 +73,44 @@ export HADOOP_CONF_DIR=/home/hadoop1/apps/hadoop-2.7.6/etc/hadoop
 hdfs://bd1807/orginal/ad/${YEAR}/${MONTH}/ad_access.log.${YEAR}-${MONTH}-${DAY} \
 hdfs://bd1807/standard/ad/${YEAR}/${MONTH}/${DAY}
 
+yarn-client方式提交：注释代码的.setMaster("local[2]")
+报错：https://www.cnblogs.com/tibit/p/7337045.html
+#!/bin/sh
+YEAR=`date -d "1 day ago" +%Y`
+MONTH=`date -d "1 day ago" +%m`
+DAY=`date -d "2 day ago" +%d`
+
+#echo "hdfs://bd1807/orginal/ad/${YEAR}/${MONTH}/ad_access.log.${YEAR}-${MONTH}-${DAY}"
+
+export HADOOP_CONF_DIR=/home/hadoop1/apps/hadoop-2.7.6/etc/hadoop
+/home/hadoop1/apps/spark-2.2.2-bin-hadoop2.7/bin/spark-submit \
+--class  com.qcj.bigdata.dmp.jobs.etl.File2ParquetJob \
+--master yarn \
+--deploy-mode client \
+--executor-memory 600M \
+--driver-memory 600M \
+--num-executors 1 \
+--total-executor-cores 1 \
+/home/hadoop1/project/jar/dmp1087/dmp-1087-1.0-SNAPSHOT-jar-with-dependencies.jar \
+hdfs://bd1807/orginal/ad/${YEAR}/${MONTH}/ad_access.log.${YEAR}-${MONTH}-${DAY} \
+hdfs://bd1807/standard/ad/${YEAR}/${MONTH}/${DAY}
+
+yarn-cluster方式:
+/home/hadoop1/apps/spark-2.2.2-bin-hadoop2.7/bin/spark-submit \
+--class  com.qcj.bigdata.dmp.jobs.etl.File2ParquetJob \
+--master yarn \
+--deploy-mode cluster \
+--executor-memory 600M \
+--driver-memory 600M \
+--num-executors 1 \
+--total-executor-cores 1 \
+/home/hadoop1/project/jar/dmp1087/dmp-1087-1.0-SNAPSHOT-jar-with-dependencies.jar \
+hdfs://bd1807/orginal/ad/${YEAR}/${MONTH}/ad_access.log.${YEAR}-${MONTH}-${DAY} \
+hdfs://bd1807/standard/ad/${YEAR}/${MONTH}/${DAY}
+
   *   3.定时调度
   *   注意：别忘了删除hdfs上的目录：
-  *   hdfs dfs -R /standard/ad/2018/12
+  *   hdfs dfs -rm -R /standard/ad/2018/12
   *    crontab -e
   *   08 21 * * * sh /home/hadoop1/project/sh/spark-submit-wc.sh >> /home/hadoop1/project/sh/elt.log
   *   什么时间执行submit.sh 打印日志到什么位置
@@ -95,7 +130,8 @@ object File2ParquetJob {
     val Array(inputPath,outputPath) = args
 
     val conf = new SparkConf()
-      .setAppName("File2ParquetJob").setMaster("local[2]")
+      .setAppName("File2ParquetJob")
+      //.setMaster("local[2]")
       //使用kryo的序列化方式，并注册
       .set("spark.serializer",classOf[KryoSerializer].getName)
       .registerKryoClasses(Array(classOf[Logs]))
